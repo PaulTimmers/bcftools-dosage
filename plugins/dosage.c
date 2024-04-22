@@ -206,51 +206,55 @@ int calc_dosage_GT(bcf1_t *rec)
 int calc_dosage_GP(bcf1_t *rec)
 {
     int i, j, nret = bcf_get_format_values(in_hdr, rec, "GP", (void**)&buf, &nbuf, BCF_HT_REAL);
-    if (nret < 0) return -1;  // Failure to retrieve values
+    if (nret < 0) return -1;  // Failed to retrieve values
 
-    nret /= rec->n_sample;  // Number of probabilities per sample
-    if (nret != rec->n_allele*(rec->n_allele+1)/2) return -1;  // Check for diploid (triangular number check)
+    nret /= rec->n_sample;
+    if (nret != rec->n_allele * (rec->n_allele + 1) / 2) return -1;  // Check if it's diploid
 
-    hts_expand(float, nret, mvals, vals);  // Ensure space in vals
-    hts_expand(float, rec->n_allele, mdsg, dsg);  // Ensure space in dsg
+    hts_expand(float, nret, mvals, vals);  // Ensure adequate space in vals
+    hts_expand(float, rec->n_allele, mdsg, dsg);  // Ensure adequate space in dsg
 
-    float *ptr = (float*) buf;
-    for (i = 0; i < rec->n_sample; i++)
-    {
-        float sum = 0;
-        for (j = 0; j < nret; j++)
-        {
-            vals[j] = ptr[j];  // Copy genotype probabilities
-            sum += vals[j];
-        }
-
-        if (sum > 0)  // Normalize probabilities if sum is positive
-        {
-            for (j = 0; j < nret; j++) vals[j] /= sum;
-
-            memset(dsg, 0, sizeof(float) * rec->n_allele);  // Initialize dosage values
-            int k, l = 0;
-            for (j = 0; j < rec->n_allele; j++)
-            {
-                for (k = 0; k <= j; k++)
-                {
-                    dsg[j] += vals[l] * (k == j ? 1 : 0.5);
-                    dsg[k] += vals[l] * (k == j ? 1 : 0.5);
-                    l++;
-                }
-            }
-        }
-        else  // Handle zero or negative sums as error condition
-        {
-            for (j = 0; j < rec->n_allele; j++) dsg[j] = -1;
-        }
-
-        // Print dosages for the current sample
-        for (j = 1; j < rec->n_allele; j++)
-            printf("%c%f", j == 1 ? '\t' : ',', dsg[j]);
-        ptr += nret;  // Move to the next sample's data
+    #define BRANCH(type_t, is_missing, is_vector_end) \
+    { \
+        type_t *ptr = (type_t*) buf; \
+        for (i = 0; i < rec->n_sample; i++) \
+        { \
+            float sum = 0; \
+            for (j = 0; j < nret; j++) \
+            { \
+                if (is_missing || is_vector_end) break; \
+                vals[j] = ptr[j]; \
+                sum += vals[j]; \
+            } \
+            if (j < nret) \
+                for (j = 0; j < rec->n_allele; j++) dsg[j] = -1; \
+            else \
+            { \
+                if (sum) for (j = 0; j < nret; j++) vals[j] /= sum; \
+                memset(dsg, 0, sizeof(float) * rec->n_allele); \
+                int k, l = 0; \
+                for (j = 0; j < rec->n_allele; j++) \
+                { \
+                    for (k = 0; k <= j; k++) \
+                    { \
+                        dsg[j] += vals[l]; \
+                        dsg[k] += vals[l]; \
+                        l++; \
+                    } \
+                } \
+            } \
+            for (j = 1; j < rec->n_allele; j++) \
+                printf("%c%f", j == 1 ? '\t' : ',', dsg[j]); \
+            ptr += nret; \
+        } \
     }
 
+    switch (gp_type)
+    {
+        case BCF_HT_INT:  BRANCH(int32_t, ptr[j] == bcf_int32_missing, ptr[j] == bcf_int32_vector_end); break;
+        case BCF_HT_REAL: BRANCH(float, bcf_float_is_missing(ptr[j]), bcf_float_is_vector_end(ptr[j])); break;
+    }
+    #undef BRANCH
     return 0;
 }
 
